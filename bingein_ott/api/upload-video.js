@@ -1,18 +1,28 @@
 // api/upload-video.js
-// This file serves as a Vercel Serverless Function.
-// It handles file uploads to Vercel Blob Storage and
-// inserts video metadata into your Appwrite database.
 
-// Using CommonJS 'require' syntax for node-appwrite and @vercel/blob
-// as this combination has been confirmed to work in your environment.
+/**
+ * @file This Vercel Serverless Function handles video and thumbnail uploads
+ * to Vercel Blob Storage and then saves the corresponding metadata
+ * to an Appwrite database.
+ * It uses 'node-appwrite' for Appwrite interaction and 'formidable'
+ * for parsing multipart/form-data requests (file uploads).
+ */
+
+// --- Module Imports ---
+// node-appwrite: Appwrite SDK for server-side operations
 const sdk = require('node-appwrite');
+// @vercel/blob: Vercel's SDK for interacting with Blob Storage
 const { put } = require('@vercel/blob');
-const busboy = require('busboy'); // For parsing multipart/form-data
+// formidable: Robust library for parsing multipart/form-data (file uploads)
+const formidable = require('formidable');
+// fs: Node.js File System module, used for reading/deleting temporary files
+const fs = require('fs');
+// path: Node.js Path module, used for path manipulation (e.g., getting base directory)
+const path = require('path');
 
-// --- Appwrite Configuration ---
-// These environment variables are crucial for connecting to your Appwrite instance.
-// They should be defined in your .env.local file for local development
-// and in your Vercel Project Settings for deployments (Development, Preview, Production).
+// --- Appwrite Configuration (Environment Variables) ---
+// These variables are loaded from the Vercel environment (or .env.local for local development).
+// They contain sensitive API keys and IDs and should NEVER be exposed client-side.
 const APPWRITE_PROJECT_ID = process.env.APPWRITE_PROJECT_ID;
 const APPWRITE_API_KEY = process.env.APPWRITE_API_KEY;
 const APPWRITE_DATABASE_ID = process.env.APPWRITE_DATABASE_ID;
@@ -22,43 +32,47 @@ const APPWRITE_ENDPOINT = process.env.APPWRITE_ENDPOINT || 'https://cloud.appwri
 
 // --- Initialize Appwrite Client ---
 // Create a new Appwrite client instance.
+// This client is configured with the endpoint, project ID, and API key
+// for server-side communication with your Appwrite project.
 const client = new sdk.Client();
-
-// Configure the client with your Appwrite endpoint, project ID, and API key.
-// The .setKey() method is used for server-side authentication with an API key.
 client
-    .setEndpoint(APPWRITE_ENDPOINT) // Set your Appwrite API Endpoint
+    .setEndpoint(APPWRITE_ENDPOINT) // Set your Appwrite API endpoint
     .setProject(APPWRITE_PROJECT_ID) // Set your Appwrite Project ID
-    .setKey(APPWRITE_API_KEY);       // Set your Appwrite Secret API Key
+    .setKey(APPWRITE_API_KEY); // Set your Appwrite secret API key (server-side only)
 
-// Instantiate Appwrite services that you will use.
-// In this case, we need the Databases service to create new video documents.
+// Initialize Appwrite services using the configured client
 const databases = new sdk.Databases(client);
-
-// Access the ID utility for generating unique document IDs.
+// ID is used for generating unique IDs (e.g., for new documents)
 const ID = sdk.ID;
 
-// --- Vercel API Configuration ---
-// This setting is essential for handling file uploads (`multipart/form-data`).
-// It tells Vercel's built-in body parser to *not* process the request body,
-// allowing us to handle it manually using `busboy`.
+// --- Vercel API Route Configuration ---
+// This configuration is crucial for handling file uploads.
+// `bodyParser: false` tells Vercel's default parser NOT to consume the request body,
+// allowing 'formidable' to handle the raw stream.
 export const config = {
   api: {
     bodyParser: false,
   },
 };
 
-// --- Main Serverless Function Handler ---
-// This function is executed when an HTTP request hits the /api/upload-video endpoint.
+/**
+ * Main handler function for the API route.
+ * @param {object} req - The incoming Node.js request object.
+ * @param {object} res - The outgoing Node.js response object.
+ * @returns {Promise<void>} - A promise that resolves when the response is sent.
+ */
 export default async function handler(req, res) {
-  // Ensure that only POST requests are allowed for this upload endpoint.
+  // Ensure only POST requests are allowed for file uploads
   if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method Not Allowed', message: 'This endpoint only accepts POST requests.' });
+    // Return a 405 Method Not Allowed error for other HTTP methods
+    return res.status(405).json({
+      error: 'Method Not Allowed',
+      message: 'This endpoint only accepts POST requests for video uploads and metadata saving.',
+    });
   }
 
-  // --- Debugging: Log Environment Variables ---
-  // These logs help confirm that your environment variables are being loaded correctly.
-  // They will appear in your terminal when running `vercel dev` or in Vercel's deployment logs.
+  // Log environment variables for debugging purposes.
+  // Sensitive API keys are partially masked for safety in logs.
   console.log('--- Environment Variables Check (Full Code) ---');
   console.log('APPWRITE_ENDPOINT:', APPWRITE_ENDPOINT);
   console.log('APPWRITE_PROJECT_ID:', APPWRITE_PROJECT_ID);
@@ -68,60 +82,68 @@ export default async function handler(req, res) {
   console.log('----------------------------------------------------');
 
   try {
-    // Parse the incoming `multipart/form-data` request.
-    // This extracts all form fields (text and files) into a FormData object.
-    const formData = await parseMultipartFormData(req);
+    // Parse the incoming multipart/form-data request using 'formidable'.
+    // This extracts text fields and saves file streams to temporary locations.
+    const { fields, files } = await parseForm(req);
+    console.log('DEBUG: Formidable parsing complete. Fields:', Object.keys(fields), 'Files:', Object.keys(files));
 
-    console.log("BYE");
-    // --- Extract Form Data ---
-    // Retrieve the values for each field from the parsed FormData object.
-    const title = formData.get('title');
-    const description = formData.get('description');
-    // Convert duration to an integer.
-    const duration = parseInt(formData.get('duration'), 10);
-    // 'isPremium' is an optional boolean. Check if it exists and convert its string value to a boolean.
-    // Defaults to `false` if the checkbox was not checked or the field was not sent.
-    const isPremium = formData.has('isPremium') ? formData.get('isPremium') === 'true' : false;
-    // Optional fields default to an empty string if not provided.
-    const genre = formData.get('genre') || '';
-    const tags = formData.get('tags') || '';
-    // Get the file objects for video and thumbnail.
-    const videoFile = formData.get('videoFile');
-    const thumbnailFile = formData.get('thumbnailFile');
+    // --- Extract and Validate Form Fields ---
+    // formidable returns fields as arrays, so we extract the first element.
+    const title = Array.isArray(fields.title) ? fields.title[0] : fields.title;
+    const description = Array.isArray(fields.description) ? fields.description[0] : fields.description;
+    const duration = parseInt(Array.isArray(fields.duration) ? fields.duration[0] : fields.duration, 10);
+    // Convert 'true'/'false' string from form to boolean
+    const isPremium = Array.isArray(fields.isPremium) ? fields.isPremium[0] === 'true' : fields.isPremium === 'true';
+    const genre = Array.isArray(fields.genre) ? fields.genre[0] : fields.genre || ''; // Default to empty string if not provided
+    const tags = Array.isArray(fields.tags) ? fields.tags[0] : fields.tags || '';     // Default to empty string if not provided
 
-    console.log("SUIIII")
+    // Extract file objects from the 'files' object returned by formidable.
+    // Ensure they are valid file objects.
+    const videoFile = files.videoFile && (Array.isArray(files.videoFile) ? files.videoFile[0] : files.videoFile);
+    const thumbnailFile = files.thumbnailFile && (Array.isArray(files.thumbnailFile) ? files.thumbnailFile[0] : files.thumbnailFile);
 
-    // --- Basic Server-Side Validation ---
-    // Ensure all mandatory fields and files are present before proceeding.
-    if (!title || !description || isNaN(duration) || !videoFile || !thumbnailFile) {
+    // Debugging: Log details of parsed file objects
+    // console.log('DEBUG: Parsed videoFile object:', videoFile ? { name: videoFile.originalFilename, filepath: videoFile.filepath, mimetype: videoFile.mimetype } : 'undefined');
+    // console.log('DEBUG: Parsed thumbnailFile object:', thumbnailFile ? { name: thumbnailFile.originalFilename, filepath: thumbnailFile.filepath, mimetype: thumbnailFile.mimetype } : 'undefined');
+
+    // Basic server-side validation: Check if required fields and files are present and valid.
+    if (!title || !description || isNaN(duration) || !videoFile || !thumbnailFile || !videoFile.filepath || !thumbnailFile.filepath) {
       return res.status(400).json({
         error: 'Bad Request',
-        message: 'Missing required fields or invalid duration. Please ensure all mandatory fields are filled and both video and thumbnail files are selected.',
+        message: 'Missing required fields or invalid data. Please ensure all mandatory fields (Title, Description, Duration) are filled, and both Video File and Thumbnail Image are selected and valid.',
       });
     }
-    // Additional validation could be added here (e.g., file size limits, file type checks).
 
-    // --- Step 1: Upload Video File to Vercel Blob Storage ---
-    // The `put` function uploads the file.
-    // `videoFile.name` is used as the filename in Blob Storage.
-    // `access: 'public'` makes the file accessible via a public URL.
-    // `contentType` is important for correct browser interpretation.
-    const videoBlob = await put(videoFile.name, videoFile, {
-      access: 'public',
-      contentType: videoFile.type,
+    // --- Upload Video File to Vercel Blob Storage ---
+    // formidable saves files to `filepath`. Read the file content into a buffer.
+    const videoFileBuffer = await fs.promises.readFile(videoFile.filepath);
+    // Upload the buffer to Vercel Blob. Use originalFilename if available, fallback to filepath.
+    const videoBlob = await put(videoFile.originalFilename || path.basename(videoFile.filepath), videoFileBuffer, {
+      access: 'public', // Make the uploaded file publicly accessible
+      contentType: videoFile.mimetype, // Set the correct MIME type
     });
     console.log('Video uploaded to Vercel Blob:', videoBlob.url);
 
-    // --- Step 2: Upload Thumbnail File to Vercel Blob Storage ---
-    // Similar process for the thumbnail image.
-    const thumbnailBlob = await put(thumbnailFile.name, thumbnailFile, {
+    // --- Upload Thumbnail File to Vercel Blob Storage ---
+    const thumbnailFileBuffer = await fs.promises.readFile(thumbnailFile.filepath);
+    const thumbnailBlob = await put(thumbnailFile.originalFilename || path.basename(thumbnailFile.filepath), thumbnailFileBuffer, {
       access: 'public',
-      contentType: thumbnailFile.type,
+      contentType: thumbnailFile.mimetype,
     });
     console.log('Thumbnail uploaded to Vercel Blob:', thumbnailBlob.url);
 
-    // --- Step 3: Insert Video Metadata into Appwrite Database ---
-    // Construct the data payload that matches your Appwrite `videos` collection schema.
+    // --- Clean Up Temporary Files ---
+    // It's crucial to delete temporary files from the serverless function's ephemeral disk.
+    try {
+        await fs.promises.unlink(videoFile.filepath);
+        await fs.promises.unlink(thumbnailFile.filepath);
+        console.log('DEBUG: Temporary files deleted successfully.');
+    } catch (cleanUpError) {
+        // Log a warning if cleanup fails, but don't block the main process.
+        console.warn('WARNING: Failed to delete temporary files:', cleanUpError);
+    }
+
+    // --- Insert Video Metadata into Appwrite Database ---
     const videoData = {
       title,
       description,
@@ -131,104 +153,82 @@ export default async function handler(req, res) {
       tags,
       thumbnailUrl: thumbnailBlob.url, // Store the public URL from Vercel Blob
       videoUrl: videoBlob.url,         // Store the public URL from Vercel Blob
-      viewsCount: 0,                   // Initialize views count for a new video
-      uploadDate: new Date().toISOString(), // Record the current timestamp in ISO format
+      viewsCount: 0, // Initialize views count for new videos
+      uploadDate: new Date().toISOString(), // Record the upload timestamp
     };
 
-    // Create a new document in your Appwrite database.
-    // `ID.unique()` generates a unique document ID for the new entry.
+    // Create a new document in the specified Appwrite database and collection.
+    // ID.unique() generates a unique ID for the document.
     const newVideoDocument = await databases.createDocument(
       APPWRITE_DATABASE_ID,
       APPWRITE_COLLECTION_ID,
-      ID.unique(), // Let Appwrite generate a unique ID
+      ID.unique(),
       videoData
     );
     console.log('Video metadata saved to Appwrite:', newVideoDocument.$id);
 
-    // --- Success Response ---
-    // Send a success response back to the frontend, including relevant details.
+    // --- Send Success Response ---
     res.status(200).json({
       message: 'Video uploaded and metadata saved successfully!',
-      video: newVideoDocument, // The full Appwrite document that was created
-      videoBlobUrl: videoBlob.url,
+      video: newVideoDocument, // Return the newly created Appwrite document details
+      videoBlobUrl: videoBlob.url, // Return Vercel Blob URLs for client confirmation/use
       thumbnailBlobUrl: thumbnailBlob.url,
     });
 
   } catch (error) {
-    // --- Error Handling ---
-    // Log the full error for server-side debugging.
+    // --- Handle Errors ---
+    // Log the full error for server-side debugging
     console.error('Error in upload-video API:', error);
-
-    // Send a user-friendly error response to the frontend.
+    // Send a generic 500 Internal Server Error to the client
     res.status(500).json({
       error: 'Internal Server Error',
-      message: 'Failed to process video upload and save metadata. Please try again.',
-      details: error.message, // Include error message for more specific debugging on frontend
+      message: 'Failed to process video upload and save metadata. Please check server logs for details and try again.',
+      details: error.message, // Include error message for debugging on client
     });
   }
 }
 
-// --- Helper Function: parseMultipartFormData ---
-// This function is crucial for processing `multipart/form-data` requests.
-// It uses the `busboy` library to stream and parse the incoming request body,
-// extracting both text fields and file data.
-// Helper function: parseMultipartFormData (enhanced debugging)
-async function parseMultipartFormData(req) {
-  console.log('DEBUG: parseMultipartFormData started.');
+/**
+ * Helper function to parse multipart/form-data requests using 'formidable'.
+ * This function processes the incoming request stream and extracts
+ * form fields and uploaded files into a temporary directory.
+ * @param {object} req - The Node.js request stream.
+ * @returns {Promise<{fields: object, files: object}>} - A promise that resolves with parsed fields and files.
+ */
+function parseForm(req) {
   return new Promise((resolve, reject) => {
-    // Check if req.headers is available and contains Content-Type
-    console.log('DEBUG: Request Headers:', req.headers);
-    if (!req.headers || !req.headers['content-type']) {
-      console.error('ERROR: Missing request headers or Content-Type.');
-      return reject(new Error('Missing request headers or Content-Type for multipart form data.'));
+    // Configure formidable:
+    // - uploadDir: Directory to save temporary uploaded files. Must exist and be writable.
+    // - keepExtensions: Keep original file extensions.
+    // - multiples: Set to false as we expect single files for video and thumbnail.
+    // - filename: Customizes the temporary filename to keep the original name (more readable).
+    const form = new formidable.IncomingForm({
+      uploadDir: './tmp',
+      keepExtensions: true,
+      multiples: false,
+      filename: (name, ext, part) => {
+        // formidable's part.originalFilename is preferred for the original file name
+        return `${part.originalFilename || `${name}${ext}`}`;
+      },
+    });
+
+    // Ensure the temporary upload directory exists.
+    // Serverless functions have ephemeral file systems, so './tmp' must be created on each invocation.
+    const tmpDir = './tmp';
+    if (!fs.existsSync(tmpDir)) {
+        console.log(`DEBUG: Creating temporary directory: ${tmpDir}`);
+        fs.mkdirSync(tmpDir);
     }
 
-    const bb = busboy({ headers: req.headers });
-    const formData = new FormData();
-    console.log('DEBUG: Busboy initialized.');
-
-    bb.on('file', (name, file, info) => {
-      const { filename, encoding, mimeType } = info;
-      console.log(`DEBUG: File detected - Name: ${name}, Filename: ${filename}, MimeType: ${mimeType}`);
-      let fileBuffer = Buffer.from([]);
-
-      file.on('data', (data) => {
-        fileBuffer = Buffer.concat([fileBuffer, data]);
-        // console.log(`DEBUG: File data chunk received for ${filename}, size: ${data.length}`); // Too verbose, uncomment if desperate
-      });
-
-      file.on('end', () => {
-        console.log(`DEBUG: File end received for ${filename}, total size: ${fileBuffer.length} bytes`);
-        const blob = new Blob([fileBuffer], { type: mimeType });
-        Object.defineProperty(blob, 'name', { value: filename });
-        formData.append(name, blob);
-        console.log(`DEBUG: File ${filename} appended to FormData.`);
-      });
-
-      file.on('error', (err) => {
-        console.error(`ERROR: File stream error for ${filename}:`, err);
-        reject(err);
-      });
+    // Parse the incoming request.
+    form.parse(req, (err, fields, files) => {
+      if (err) {
+        console.error('ERROR: Formidable parsing error:', err);
+        // Clean up any partially uploaded files if parsing fails
+        form.emit('error', err); // Trigger the error handler for formidable
+        return reject(err);
+      }
+      resolve({ fields, files });
     });
-
-    bb.on('field', (name, val, info) => {
-      console.log(`DEBUG: Field detected - Name: ${name}, Value: ${val}`);
-      formData.append(name, val);
-    });
-
-    bb.on('close', () => {
-      console.log('DEBUG: Busboy closed. Resolving FormData.');
-      resolve(formData);
-    });
-
-    bb.on('error', (err) => {
-      console.error('ERROR: Busboy parsing error:', err);
-      reject(err);
-    });
-
-    // Pipe the request stream to busboy.
-    // This is where busboy starts consuming the incoming data.
-    req.pipe(bb);
-    console.log('DEBUG: Request piped to busboy.');
   });
 }
