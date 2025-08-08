@@ -1,8 +1,13 @@
 import React, { useState } from 'react';
-import { Upload, CheckCircle, XCircle, Loader2, Info } from 'lucide-react'; 
+import { Upload, CheckCircle, XCircle, Loader2, Info } from 'lucide-react'; // Icons for better UX
 
 /**
  * AdminUploadPage Component
+ *
+ * This component provides a form for administrators to upload new video content.
+ * It handles form state, client-side validation, file selection, and submission
+ * to a Vercel serverless API route. It provides visual feedback for loading,
+ * success, and error states.
  *
  * Key features:
  * - Controlled components for all form inputs.
@@ -29,6 +34,7 @@ const AdminUploadPage = () => {
   // IMPORTANT: In a production application, these IDs would be derived from
   // the authenticated user's session (e.g., via Appwrite's client-side SDK)
   // and NOT manually entered by the user or hardcoded.
+  const [appwriteUserId, setAppwriteUserId] = useState(''); // Placeholder for actual user ID
   const [appwriteTeamId, setAppwriteTeamId] = useState(''); // Placeholder for your 'content-management' team ID
 
   // --- State for UI Feedback and Loading ---
@@ -38,15 +44,22 @@ const AdminUploadPage = () => {
 
   // --- Event Handlers ---
 
+  /**
+   * Handles changes to text input fields (title, description, duration, genre, tags).
+   * @param {React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>} e - The change event.
+   * @param {function} setter - The state setter function for the specific field.
+   */
   const handleTextChange = (e, setter) => {
     setter(e.target.value);
     setErrorMessage(''); // Clear error messages on input change
     setSuccessMessage(''); // Clear success messages on input change
   };
 
-   // Handles changes to the video file input.
-   // Performs basic file type validation.
-   
+  /**
+   * Handles changes to the video file input.
+   * Performs basic file type validation.
+   * @param {React.ChangeEvent<HTMLInputElement>} e - The change event.
+   */
   const handleVideoFileChange = (e) => {
     const file = e.target.files ? e.target.files[0] : null;
     if (file && file.type.startsWith('video/')) {
@@ -58,9 +71,11 @@ const AdminUploadPage = () => {
     }
   };
 
-
-   //Handles changes to the thumbnail file input.
-   // Performs basic file type validation.
+  /**
+   * Handles changes to the thumbnail file input.
+   * Performs basic file type validation.
+   * @param {React.ChangeEvent<HTMLInputElement>} e - The change event.
+   */
   const handleThumbnailFileChange = (e) => {
     const file = e.target.files ? e.target.files[0] : null;
     if (file && file.type.startsWith('image/')) {
@@ -72,9 +87,11 @@ const AdminUploadPage = () => {
     }
   };
 
-  
-  // Handles the form submission.
-  // Constructs FormData, sends it to the API, and manages UI feedback.
+  /**
+   * Handles the form submission.
+   * Constructs FormData, sends it to the API, and manages UI feedback.
+   * @param {React.FormEvent<HTMLFormElement>} e - The form submission event.
+   */
   const handleSubmit = async (e) => {
     e.preventDefault(); // Prevent default browser form submission
 
@@ -84,7 +101,7 @@ const AdminUploadPage = () => {
 
     // --- Client-side Validation ---
     // Ensure all required fields are filled before sending the request.
-    if (!title.trim() || !description.trim() || isNaN(parseInt(duration)) || !videoFile || !thumbnailFile || !appwriteTeamId.trim()) {
+    if (!title.trim() || !description.trim() || isNaN(parseInt(duration)) || !videoFile || !thumbnailFile || !appwriteUserId.trim() || !appwriteTeamId.trim()) {
       setErrorMessage('Please fill in all required fields, select both files, and provide valid Appwrite User/Team IDs.');
       setLoading(false);
       return;
@@ -101,6 +118,7 @@ const AdminUploadPage = () => {
     formData.append('videoFile', videoFile);
     formData.append('thumbnailFile', thumbnailFile);
     // Append the Appwrite IDs for backend permission processing
+    formData.append('userId', appwriteUserId.trim());
     formData.append('teamId', appwriteTeamId.trim());
 
     try {
@@ -129,7 +147,7 @@ const AdminUploadPage = () => {
 
       } else {
         // Display error message from the backend
-        setErrorMessage((data.message + '\n' + data.details)  || data.error || 'An unknown error occurred during upload.');
+        setErrorMessage(data.message || data.error || 'An unknown error occurred during upload.');
       }
     } catch (error) {
       console.error('Frontend Upload Error:', error);
@@ -172,7 +190,20 @@ const AdminUploadPage = () => {
             <p className="text-xs text-blue-300 mb-3">
               These IDs are for backend permission testing. Replace with a secure authentication flow.
             </p>
-            <div className="flex">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="appwriteUserId" className="block text-sm font-medium text-gray-300 mb-1">Appwrite User ID</label>
+                <input
+                  type="text"
+                  id="appwriteUserId"
+                  value={appwriteUserId}
+                  onChange={(e) => handleTextChange(e, setAppwriteUserId)}
+                  className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-md text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                  placeholder="e.g., user_123abc"
+                  required // Make required for testing
+                />
+              </div>
+              <div>
                 <label htmlFor="appwriteTeamId" className="block text-sm font-medium text-gray-300 mb-1">Appwrite Team ID</label>
                 <input
                   type="text"
@@ -180,9 +211,10 @@ const AdminUploadPage = () => {
                   value={appwriteTeamId}
                   onChange={(e) => handleTextChange(e, setAppwriteTeamId)}
                   className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-md text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
-                  placeholder="e.g., 123abc"
+                  placeholder="e.g., team_xyz789 (content-management)"
                   required // Make required for testing
                 />
+              </div>
             </div>
           </div>
 
@@ -317,7 +349,7 @@ const AdminUploadPage = () => {
           <button
             type="submit"
             disabled={loading}
-            className={`w-full flex justify-center items-center px-6 py-3 border border-transparent rounded-lg shadow-lg text-lg font-semibold transition-all duration-300 ease-in-out cursor-pointer
+            className={`w-full flex justify-center items-center px-6 py-3 border border-transparent rounded-lg shadow-lg text-lg font-semibold transition-all duration-300 ease-in-out
               ${loading ? 'bg-blue-700 cursor-not-allowed opacity-70' : 'bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 text-white'}
             `}
           >
