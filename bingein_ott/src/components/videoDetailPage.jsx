@@ -9,10 +9,10 @@ const VideoDetailPage = ({ videoId, onBack }) => { // onBack prop to go back to 
   const [error, setError] = useState(null);
 
   // --- Appwrite Client-side Configuration ---
-  const APPWRITE_PROJECT_ID = 'YOUR_APPWRITE_PROJECT_ID'; // Replace with your Project ID
-  const APPWRITE_DATABASE_ID = 'YOUR_APPWRITE_DATABASE_ID'; // Replace with your Database ID
-  const APPWRITE_COLLECTION_ID = 'YOUR_APPWRITE_COLLECTION_ID'; // Replace with your Collection ID
-  const APPWRITE_ENDPOINT = 'https://cloud.appwrite.io/v1'; // Your Appwrite Endpoint
+  const APPWRITE_PROJECT_ID = import.meta.env.VITE_APPWRITE_PROJECT_ID;
+  const APPWRITE_DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID;
+  const APPWRITE_COLLECTION_ID = import.meta.env.VITE_APPWRITE_COLLECTION_ID;
+  const APPWRITE_ENDPOINT = import.meta.env.VITE_APPWRITE_ENDPOINT;
 
   useEffect(() => {
     const fetchVideo = async () => {
@@ -54,7 +54,7 @@ const VideoDetailPage = ({ videoId, onBack }) => { // onBack prop to go back to 
     <div className="min-h-screen bg-gray-950 text-gray-100 p-4 sm:p-8 font-inter">
       <button 
         onClick={onBack} 
-        className="mb-6 flex items-center px-4 py-2 bg-gray-800 text-gray-200 rounded-lg hover:bg-gray-700 transition-colors duration-200"
+        className="cursor-pointer mb-6 flex items-center px-4 py-2 bg-gray-800 text-gray-200 rounded-lg hover:bg-gray-700 transition-colors duration-200"
       >
         <ArrowLeft className="w-5 h-5 mr-2" /> Back to Home
       </button>
